@@ -785,15 +785,6 @@ main(int argc, char* argv[])
         iterations = 1;
 #endif
 
-#if OIIO_SIMD_SSE && !OIIO_F16C_ENABLED
-    // Some rogue libraries (and icc runtime libs?) will turn on the cpu mode
-    // that causes floating point denormals get crushed to 0.0 in certain ops,
-    // and leave it that way! This can give us the wrong results for the
-    // particular sequence of SSE intrinsics we use to convert half->float for
-    // exr files containing pixels with denorm values.
-    simd::set_denorms_zero_mode(false);
-#endif
-
     getargs(argc, argv);
 
     test_int_helpers();
@@ -820,7 +811,19 @@ main(int argc, char* argv[])
     std::cout << "round trip convert float/unsigned int/float\n";
     test_convert_type<float, unsigned int>();
 
+    // Half subnormals are legal pixel values in dark areas. Make sure the
+    // accelerated half->float conversion survives DAZ/FTZ being enabled by
+    // another library in the process.
     test_half_convert_accuracy();
+#if OIIO_SIMD_SSE
+    bool dz = simd::get_denorms_zero_mode();
+    bool fz = simd::get_flush_zero_mode();
+    simd::set_denorms_zero_mode(true);
+    simd::set_flush_zero_mode(true);
+    test_half_convert_accuracy();
+    simd::set_denorms_zero_mode(dz);
+    simd::set_flush_zero_mode(fz);
+#endif
 
     benchmark_convert_type<unsigned char, float>();
     benchmark_convert_type<float, unsigned char>();

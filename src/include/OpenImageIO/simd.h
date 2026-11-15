@@ -6845,7 +6845,38 @@ OIIO_FORCEINLINE void vfloat4::load (const half *values) {
     __m128  infnanexp   = _mm_and_ps(_mm_castsi128_ps(b_wasinfnan), CONSTF(exp_infnan));
     __m128  sign_inf    = _mm_or_ps(_mm_castsi128_ps(sign), infnanexp);
     __m128  final       = _mm_or_ps(scaled, sign_inf);
-    // ~11 SSE2 ops.
+    // The multiply above turns the half exponent into a float, but the
+    // shifted mantissa is a float denormal when the half is subnormal. A
+    // rogue library may have enabled DAZ/FTZ, which would flush those values
+    // to zero; shadows are full of them. Normalize subnormal half values with
+    // integer arithmetic instead, which is immune to the FP control modes.
+    __m128i zero      = _mm_setzero_si128();
+    __m128i subnormal = _mm_and_si128(
+        _mm_cmpgt_epi32(_mm_set1_epi32(0x0400), expmant),
+        _mm_cmpgt_epi32(expmant, zero));
+    if (_mm_movemask_epi8(subnormal)) {
+        // For mantissa m, p = floor(log2(m)) and the value is
+        // (m * 2^(10-p)) * 2^(p-24). The first factor is a normalized
+        // 11-bit significand, so the float exponent is p+103.
+        __m128  mantf   = _mm_cvtepi32_ps(
+            _mm_and_si128(expmant, _mm_set1_epi32(0x03ff)));
+        __m128i mbits   = _mm_castps_si128(mantf);
+        __m128i p       = _mm_sub_epi32(_mm_srli_epi32(mbits, 23),
+                                        _mm_set1_epi32(127));
+        __m128i scale   = _mm_slli_epi32(
+            _mm_sub_epi32(_mm_set1_epi32(137), p), 23);
+        __m128i x       = _mm_cvttps_epi32(
+            _mm_mul_ps(mantf, _mm_castsi128_ps(scale)));
+        __m128i fexp    = _mm_add_epi32(p, _mm_set1_epi32(103));
+        __m128i frac    = _mm_slli_epi32(
+            _mm_and_si128(x, _mm_set1_epi32(0x03ff)), 13);
+        __m128i corrected
+            = _mm_or_si128(sign, _mm_or_si128(_mm_slli_epi32(fexp, 23), frac));
+        __m128 mask = _mm_castsi128_ps(subnormal);
+        final = _mm_or_ps(_mm_and_ps(mask, _mm_castsi128_ps(corrected)),
+                          _mm_andnot_ps(mask, final));
+    }
+    // ~11 SSE2 ops for the common (normal, finite) case.
     m_simd = final;
 # undef CONSTI
 # undef CONSTF
